@@ -1,0 +1,16 @@
+[project]
+name = "eval2reward"
+version = "0.1.0"
+description = "A toolkit for training RLHF reward models from agent trajectories."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas",
+    "transformers[torch]",
+    "trl",
+    "jupyterlab",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta" 
