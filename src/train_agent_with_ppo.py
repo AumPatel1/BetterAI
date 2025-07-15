@@ -92,9 +92,10 @@ def main():
     print("\n🚀 Ready for PPO training setup!")
     
     # Step 5: Define Prompts
-    print("\n🔄 Step 5: Defining training prompts...")
-    prompts = ["Book a flight from JFK to SFO for next Tuesday"]
-    print("✅ Step 5: Prompts defined")
+    # Load the prompts from the prompts.json file
+    print("\n🔄 Step 5: Defining training prompts... from prompts.json")
+    prompts = ["Book a flight from JFK to SFO for next Tuesday at 10:00 AM"]
+    print("✅ Step 5: Prompts defined ")
     print(f"   - Number of prompts: {len(prompts)}")
     print(f"   - Sample prompt: {prompts[0]}")
     
@@ -113,6 +114,7 @@ def main():
     
     print("✅ Step 6: Prompts tokenized and dataset created")
     print(f"   - Number of tokenized prompts: {len(prompt_tensors)}")
+    print(f"   - Sample tensor: {prompt_tensors[0]}")
     print(f"   - Sample tensor shape: {prompt_tensors[0].shape}")
     print(f"   - Dataset size: {len(train_dataset)}")
     print(f"   - Dataset fields: {train_dataset.column_names}")
