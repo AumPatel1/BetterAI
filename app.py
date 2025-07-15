@@ -54,9 +54,9 @@ def get_all_scores(eff_traj, ineff_traj, fail_traj):
     # Format the final output string
     output_text = f"""
     --- Reward Model Scores ---
-    Efficient Success Score:    {efficient_score:.4f}
-    Inefficient Success Score:  {inefficient_score:.4f}
-    Failed Trajectory Score:    {failed_score:.4f}
+    Efficient Success Score (Ideal):    {efficient_score:.4f}
+    Inefficient Success Score (Ideal):  {inefficient_score:.4f}
+    Failed Trajectory Score (Ideal):    {failed_score:.4f}
     
     --- Analysis ---
     {' '.join(analysis_text)}
@@ -94,6 +94,10 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         This demo showcases a trained Reward Model that can distinguish between successful, inefficient, and failed AI agent trajectories.
         The text boxes below are pre-filled with example trajectories. You can edit them or paste new ones.
         Click "Calculate Scores" to see how the model evaluates each one. A higher score is better.
+        The ideal scores are:
+        - Efficient Success Score (Ideal): 0.4521
+        - Inefficient Success Score (Ideal): -0.1588
+        - Failed Trajectory Score (Ideal): -0.9832
         """
     )
     with gr.Row():
