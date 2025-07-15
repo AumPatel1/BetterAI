@@ -1,8 +1,36 @@
 import torch
 import pandas as pd
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, DataCollatorWithPadding
+import logging
+import os
+import json
+from pathlib import Path
+from typing import Dict, Any, Optional
+from datasets import load_dataset, Dataset
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForSequenceClassification
+)
+from transformers.data.data_collator import DataCollatorWithPadding
 from trl import RewardTrainer, RewardConfig
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+from tqdm import tqdm
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('reward_training.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class CustomRewardDataCollator(DataCollatorWithPadding):
     """Custom data collator for reward training that handles pre-tokenized data."""
@@ -39,63 +67,126 @@ class CustomRewardDataCollator(DataCollatorWithPadding):
         
         return batch
 
-def main():
-    """Train a reward model using pairwise preferences dataset."""
+class RewardModelTrainer:
+    """Enhanced reward model trainer with better error handling and evaluation."""
     
-    print("🚀 Starting reward model training...")
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = None
+        self.model = None
+        self.trainer = None
+        
+        # Create output directories
+        self.output_dir = Path(config.get("output_dir", "./models/reward_model"))
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"🚀 Initializing RewardModelTrainer on device: {self.device}")
     
-    # 1. Import Libraries (already done at top)
-    # 2. Define Model Name
-    model_name = "roberta-base"
-    print(f"📋 Using model: {model_name}")
+    def load_tokenizer_and_model(self):
+        """Load and configure tokenizer and model."""
+        try:
+            model_name = self.config["model_name"]
+            logger.info(f"📋 Loading model: {model_name}")
+            
+            # Load tokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name, 
+                use_fast=False,
+                trust_remote_code=True
+            )
+            
+            # Add padding token if it doesn't exist
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+            # Set max length
+            max_length = self.config.get("max_length", 512)
+            self.tokenizer.model_max_length = max_length
+            
+            # Load model
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_name, 
+                num_labels=1,  # Single reward score
+                torch_dtype=torch.float16 if self.config.get("use_fp16", False) else torch.float32
+            )
+            
+            # Move model to device
+            self.model.to(self.device)
+            
+            logger.info(f"✅ Model loaded with {self.model.num_parameters():,} parameters")
+            logger.info(f"📊 Model dtype: {next(self.model.parameters()).dtype}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading model: {str(e)}")
+            raise
     
-    # 3. Load Tokenizer and Model
-    print("🔧 Loading tokenizer and model...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, 
-        num_labels=1  # Single reward score
-    )
+    def load_and_preprocess_data(self):
+        """Load and preprocess the dataset."""
+        try:
+            data_path = self.config["data_path"]
+            logger.info(f"📊 Loading dataset from: {data_path}")
+            
+            # Check if file exists
+            if not os.path.exists(data_path):
+                raise FileNotFoundError(f"Dataset file not found: {data_path}")
+            
+            # Load dataset
+            dataset = load_dataset('csv', data_files=data_path)
+            logger.info(f"📈 Dataset loaded: {dataset}")
+            
+            # Validate dataset structure
+            required_columns = ["chosen", "rejected"]
+            train_dataset = dataset["train"]
+            for col in required_columns:
+                if col not in train_dataset.column_names:
+                    raise ValueError(f"Missing required column: {col}")
+            
+            # Preprocess dataset
+            max_length = self.config.get("max_length", 512)
+            processed_dataset = train_dataset.map(
+                lambda examples: self._preprocess_function(examples, max_length),
+                batched=True,
+                remove_columns=train_dataset.column_names,
+                desc="Preprocessing dataset"
+            )
+            
+            logger.info(f"✅ Dataset preprocessed: {len(processed_dataset)} samples")
+            
+            # Split into train/validation if specified
+            if self.config.get("validation_split", 0.1) > 0:
+                split_dataset = processed_dataset.train_test_split(
+                    test_size=self.config["validation_split"],
+                    seed=self.config.get("seed", 42)
+                )
+                return split_dataset
+            else:
+                return {"train": processed_dataset, "test": processed_dataset}
+                
+        except Exception as e:
+            logger.error(f"❌ Error loading/preprocessing data: {str(e)}")
+            raise
     
-    # Add padding token if it doesn't exist
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    # Set max length to prevent sequence length issues
-    max_length = 512
-    tokenizer.model_max_length = max_length
-    
-    # Create custom data collator for handling variable-length sequences
-    data_collator = CustomRewardDataCollator(tokenizer=tokenizer, max_length=max_length)
-    
-    print(f"✅ Model loaded with {model.num_parameters():,} parameters")
-    
-    # 4. Load and Prepare Dataset
-    print("📊 Loading pairwise preferences dataset...")
-    dataset = load_dataset('csv', data_files='data/pairwise_preferences_advanced.csv')
-    print(f"📈 Dataset loaded: {dataset}")
-    
-    def preprocess_function(examples):
+    def _preprocess_function(self, examples: Dict[str, Any], max_length: int) -> Dict[str, Any]:
         """Preprocess the dataset for reward training."""
-        # Tokenize the chosen and rejected responses
         chosen_texts = examples["chosen"]
         rejected_texts = examples["rejected"]
         
         # Tokenize with truncation
-        chosen_tokens = tokenizer(
+        chosen_tokens = self.tokenizer(
             chosen_texts,
             truncation=True,
-            padding=False,  # Don't pad here, let the collator handle it
+            padding=False,
             max_length=max_length,
-            return_tensors=None  # Return lists, not tensors
+            return_tensors=None
         )
         
-        rejected_tokens = tokenizer(
+        rejected_tokens = self.tokenizer(
             rejected_texts,
             truncation=True,
-            padding=False,  # Don't pad here, let the collator handle it
+            padding=False,
             max_length=max_length,
-            return_tensors=None  # Return lists, not tensors
+            return_tensors=None
         )
         
         return {
@@ -105,58 +196,212 @@ def main():
             "attention_mask_rejected": rejected_tokens["attention_mask"]
         }
     
-    print("🔄 Preprocessing dataset...")
-    processed_dataset = dataset["train"].map(
-        preprocess_function,
-        batched=True,
-        remove_columns=dataset["train"].column_names
-    )
-    print(f"✅ Dataset preprocessed: {len(processed_dataset)} samples")
+    def create_trainer(self, train_dataset: Dataset, eval_dataset: Optional[Dataset] = None):
+        """Create and configure the RewardTrainer."""
+        try:
+            # Create custom data collator
+            data_collator = CustomRewardDataCollator(
+                tokenizer=self.tokenizer, 
+                max_length=self.config.get("max_length", 512)
+            )
+            
+            # Training arguments
+            training_args = RewardConfig(
+                output_dir=str(self.output_dir),
+                num_train_epochs=self.config.get("num_epochs", 3),
+                per_device_train_batch_size=self.config.get("batch_size", 4),
+                per_device_eval_batch_size=self.config.get("eval_batch_size", 4),
+                learning_rate=self.config.get("learning_rate", 2e-5),
+                warmup_steps=self.config.get("warmup_steps", 100),
+                weight_decay=self.config.get("weight_decay", 0.01),
+                logging_steps=self.config.get("logging_steps", 10),
+                save_steps=self.config.get("save_steps", 500),
+                save_strategy="steps",
+                save_total_limit=self.config.get("save_total_limit", 3),
+                remove_unused_columns=False,
+                report_to="wandb" if self.config.get("use_wandb", False) and WANDB_AVAILABLE else None,
+                bf16=self.config.get("use_bf16", False),
+                fp16=self.config.get("use_fp16", False),
+                dataloader_num_workers=self.config.get("dataloader_num_workers", 0),
+                gradient_accumulation_steps=self.config.get("gradient_accumulation_steps", 1),
+                gradient_checkpointing=self.config.get("gradient_checkpointing", False),
+                optim="adamw_torch",
+                lr_scheduler_type="cosine",
+                seed=self.config.get("seed", 42),
+                dataloader_pin_memory=False,
+                group_by_length=True,
+            )
+            
+            # Initialize trainer
+            self.trainer = RewardTrainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                data_collator=data_collator,
+            )
+            
+            logger.info("🎯 RewardTrainer initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error creating trainer: {str(e)}")
+            raise
     
-    # 5. Define Training Arguments
-    print("⚙️ Setting up training arguments...")
-    training_args = RewardConfig(
-        output_dir='./models/eval2reward_model_advanced',
-        num_train_epochs=1,
-        per_device_train_batch_size=2,
-        learning_rate=2e-5,
-        save_strategy="epoch",
-        logging_steps=1,
-        remove_unused_columns=False,
-        warmup_steps=10,
-        weight_decay=0.01,
-        save_total_limit=2,
-        load_best_model_at_end=False,
-        report_to=None,  # Disable wandb/tensorboard logging
-        bf16=False  # Disable bf16 training
-    )
+    def train(self):
+        """Train the reward model."""
+        try:
+            logger.info("🏋️ Starting training...")
+            
+            # Train the model
+            train_result = self.trainer.train()
+            
+            # Save training results
+            self.trainer.save_model()
+            self.trainer.save_state()
+            
+            # Log training metrics
+            logger.info("📊 Training completed!")
+            logger.info(f"   - Total steps: {train_result.global_step}")
+            logger.info(f"   - Training loss: {train_result.training_loss:.4f}")
+            if hasattr(train_result, 'metrics') and 'train_runtime' in train_result.metrics:
+                logger.info(f"   - Training time: {train_result.metrics['train_runtime']}")
+            
+            # Save training metrics
+            metrics_path = self.output_dir / "training_metrics.json"
+            with open(metrics_path, 'w') as f:
+                json.dump(train_result.metrics, f, indent=2)
+            
+            return train_result
+            
+        except Exception as e:
+            logger.error(f"❌ Error during training: {str(e)}")
+            raise
     
-    # 6. Initialize the RewardTrainer
-    print("🎯 Initializing RewardTrainer...")
-    trainer = RewardTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=processed_dataset,
-        data_collator=data_collator,
-        processing_class=tokenizer
-    )
+    def evaluate(self, eval_dataset: Dataset):
+        """Evaluate the trained model."""
+        try:
+            logger.info("🔍 Evaluating model...")
+            
+            eval_results = self.trainer.evaluate(eval_dataset)
+            
+            logger.info("📊 Evaluation Results:")
+            for key, value in eval_results.items():
+                logger.info(f"   - {key}: {value:.4f}")
+            
+            # Save evaluation results
+            eval_path = self.output_dir / "evaluation_results.json"
+            with open(eval_path, 'w') as f:
+                json.dump(eval_results, f, indent=2)
+            
+            return eval_results
+            
+        except Exception as e:
+            logger.error(f"❌ Error during evaluation: {str(e)}")
+            raise
     
-    # 7. Train the Model
-    print("🏋️ Starting training...")
-    trainer.train()
+    def save_config(self):
+        """Save the training configuration."""
+        config_path = self.output_dir / "training_config.json"
+        with open(config_path, 'w') as f:
+            json.dump(self.config, f, indent=2)
+        logger.info(f"💾 Configuration saved to: {config_path}")
+
+def create_default_config() -> Dict[str, Any]:
+    """Create a default configuration for training."""
+    return {
+        "model_name": "roberta-base",
+        "data_path": "data/pairwise_preferences_advanced.csv",
+        "output_dir": "./models/reward_model_enhanced",
+        "max_length": 512,
+        "num_epochs": 3,
+        "batch_size": 4,
+        "eval_batch_size": 4,
+        "learning_rate": 2e-5,
+        "warmup_steps": 100,
+        "weight_decay": 0.01,
+        "logging_steps": 10,
+        "save_steps": 500,
+        "save_total_limit": 3,
+        "validation_split": 0.1,
+        "use_wandb": False,
+        "use_fp16": False,
+        "use_bf16": False,
+        "gradient_accumulation_steps": 1,
+        "gradient_checkpointing": False,
+        "dataloader_num_workers": 0,
+        "seed": 42
+    }
+
+def load_config_from_file(config_path: str) -> Dict[str, Any]:
+    """Load configuration from a JSON file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        logger.info(f"📋 Loaded configuration from: {config_path}")
+        return config
+    except FileNotFoundError:
+        logger.warning(f"⚠️ Configuration file not found: {config_path}. Using default config.")
+        return create_default_config()
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Invalid JSON in configuration file: {e}")
+        return create_default_config()
+
+def main():
+    """Main training function with enhanced error handling and configuration."""
     
-    # 8. Save the Final Model
-    print("💾 Saving final model...")
-    trainer.save_model()
-    
-    print("🎉 Training completed successfully!")
-    print(f"📁 Model saved to: ./models/eval2reward_model_advanced")
-    print(f"📊 Training stats:")
-    print(f"   - Total steps: {trainer.state.global_step}")
-    if trainer.state.log_history and 'loss' in trainer.state.log_history[-1]:
-        print(f"   - Training loss: {trainer.state.log_history[-1]['loss']:.4f}")
-    else:
-        print(f"   - Training loss: {trainer.state.log_history[-1].get('train_loss', 'N/A')}")
+    try:
+        # Load configuration (from file or default)
+        config_path = "config/training_config.json"
+        if os.path.exists(config_path):
+            config = load_config_from_file(config_path)
+        else:
+            config = create_default_config()
+            logger.info("📋 Using default configuration")
+        
+        # Initialize wandb if enabled
+        if config["use_wandb"] and WANDB_AVAILABLE:
+            wandb.init(
+                project="reward-model-training",
+                config=config,
+                name=f"reward-model-{config['model_name']}"
+            )
+        
+        # Create trainer
+        trainer = RewardModelTrainer(config)
+        
+        # Save configuration
+        trainer.save_config()
+        
+        # Load model and tokenizer
+        trainer.load_tokenizer_and_model()
+        
+        # Load and preprocess data
+        datasets = trainer.load_and_preprocess_data()
+        
+        # Create trainer
+        trainer.create_trainer(
+            train_dataset=datasets["train"],
+            eval_dataset=datasets["test"] if "test" in datasets else None
+        )
+        
+        # Train the model
+        train_result = trainer.train()
+        
+        # Evaluate if validation dataset exists
+        if "test" in datasets:
+            eval_results = trainer.evaluate(datasets["test"])
+        
+        logger.info("🎉 Training completed successfully!")
+        logger.info(f"📁 Model saved to: {trainer.output_dir}")
+        
+        if config.get("use_wandb", False) and WANDB_AVAILABLE:
+            wandb.finish()
+        
+    except Exception as e:
+        logger.error(f"❌ Training failed: {str(e)}")
+        if config.get("use_wandb", False) and WANDB_AVAILABLE:
+            wandb.finish()
+        raise
 
 if __name__ == "__main__":
     main() 
