@@ -56,6 +56,7 @@ notebook_content = {
                 "## 2. Load the Trained Model and Tokenizer"
             ]
         },
+
         {
             "cell_type": "code",
             "execution_count": None,
@@ -265,6 +266,13 @@ notebook_content = {
 
 def main():
     """Create the validation notebook."""
+    # Get the absolute path to the notebooks directory
+    notebooks_dir = os.path.abspath("notebooks")
+    print(f"📂 Notebooks directory: {notebooks_dir}")
+    print(f"📁 Path exists: {os.path.exists(notebooks_dir)}")
+    print(f"📁 Is directory: {os.path.isdir(notebooks_dir)}")
+    print(f"📁 Is file: {os.path.isfile(notebooks_dir)}")
+    print(f"📁 Is symlink: {os.path.islink(notebooks_dir)}")
     # Ensure notebooks directory exists
     os.makedirs("notebooks", exist_ok=True)
     
