@@ -130,7 +130,7 @@ class RewardModelTrainer:
             raise
     
     def load_and_preprocess_data(self):
-        """Load and preprocess the dataset."""
+        """Load and preprocess the dataset with optional validation."""
         try:
             data_path = self.config["data_path"]
             logger.info(f"📊 Loading dataset from: {data_path}")
@@ -139,23 +139,53 @@ class RewardModelTrainer:
             if not os.path.exists(data_path):
                 raise FileNotFoundError(f"Dataset file not found: {data_path}")
             
-            # Load dataset
-            dataset = load_dataset('csv', data_files=data_path)
-            logger.info(f"📈 Dataset loaded: {dataset}")
+            # Load dataset as pandas DataFrame for validation
+            df = pd.read_csv(data_path)
+            logger.info(f"📈 Dataset loaded: {df.shape}")
+            
+            # Data validation if enabled
+            if (self.config.get("data_validation", {}).get("enabled", False) and 
+                DATA_VALIDATOR_AVAILABLE):
+                
+                logger.info("🔍 Running data validation and cleaning...")
+                validation_config = self.config.get("data_validation", {})
+                
+                validator = DataValidator(validation_config)
+                df, validation_results = validator.validate_dataset(df)
+                
+                # Save validation report if requested
+                if validation_config.get("save_validation_report", True):
+                    report_path = self.output_dir / "validation_report.json"
+                    validator.save_validation_report(str(report_path))
+                
+                # Save cleaned data if requested
+                if validation_config.get("save_cleaned_data", True):
+                    cleaned_data_path = self.output_dir / "cleaned_data.csv"
+                    df.to_csv(cleaned_data_path, index=False)
+                    logger.info(f"💾 Cleaned data saved to: {cleaned_data_path}")
+                
+                # Print validation summary
+                validator.print_summary()
+                
+                # Update data path to use cleaned data
+                data_path = str(cleaned_data_path)
+            
+            # Convert to HuggingFace dataset
+            dataset = Dataset.from_pandas(df)
+            logger.info(f"📈 Dataset converted: {dataset}")
             
             # Validate dataset structure
             required_columns = ["chosen", "rejected"]
-            train_dataset = dataset["train"]
             for col in required_columns:
-                if col not in train_dataset.column_names:
+                if col not in dataset.column_names:
                     raise ValueError(f"Missing required column: {col}")
             
             # Preprocess dataset
             max_length = self.config.get("max_length", 512)
-            processed_dataset = train_dataset.map(
+            processed_dataset = dataset.map(
                 lambda examples: self._preprocess_function(examples, max_length),
                 batched=True,
-                remove_columns=train_dataset.column_names,
+                remove_columns=dataset.column_names,
                 desc="Preprocessing dataset"
             )
             
