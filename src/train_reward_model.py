@@ -21,6 +21,14 @@ except ImportError:
     WANDB_AVAILABLE = False
 from tqdm import tqdm
 
+# Import data validation module
+try:
+    from data_validator import DataValidator
+    DATA_VALIDATOR_AVAILABLE = True
+except ImportError:
+    DATA_VALIDATOR_AVAILABLE = False
+    logger.warning("DataValidator not available. Data validation will be skipped.")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
