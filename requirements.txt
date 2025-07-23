@@ -9,4 +9,7 @@ tqdm>=4.65.0
 wandb>=0.15.0
 accelerate>=0.20.0
 peft>=0.4.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+gradio>=3.50.0
 
