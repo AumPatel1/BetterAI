@@ -99,19 +99,19 @@ class RewardModelTrainer:
             
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name, 
+        model_name, 
                 use_fast=False,
                 trust_remote_code=True
-            )
-            
-            # Add padding token if it doesn't exist
+    )
+    
+    # Add padding token if it doesn't exist
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-            
+    
             # Set max length
             max_length = self.config.get("max_length", 512)
             self.tokenizer.model_max_length = max_length
-            
+    
             # Load model
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 model_name, 
@@ -163,7 +163,7 @@ class RewardModelTrainer:
                     cleaned_data_path = self.output_dir / "cleaned_data.csv"
                     df.to_csv(cleaned_data_path, index=False)
                     logger.info(f"💾 Cleaned data saved to: {cleaned_data_path}")
-                
+    
                 # Print validation summary
                 validator.print_summary()
                 
@@ -244,7 +244,7 @@ class RewardModelTrainer:
             )
             
             # Training arguments
-            training_args = RewardConfig(
+    training_args = RewardConfig(
                 output_dir=str(self.output_dir),
                 num_train_epochs=self.config.get("num_epochs", 3),
                 per_device_train_batch_size=self.config.get("batch_size", 4),
@@ -256,7 +256,7 @@ class RewardModelTrainer:
                 save_steps=self.config.get("save_steps", 500),
                 save_strategy="steps",
                 save_total_limit=self.config.get("save_total_limit", 3),
-                remove_unused_columns=False,
+        remove_unused_columns=False,
                 report_to="wandb" if self.config.get("use_wandb", False) and WANDB_AVAILABLE else None,
                 bf16=self.config.get("use_bf16", False),
                 fp16=self.config.get("use_fp16", False),
@@ -273,10 +273,10 @@ class RewardModelTrainer:
             # Initialize trainer
             self.trainer = RewardTrainer(
                 model=self.model,
-                args=training_args,
+        args=training_args,
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                data_collator=data_collator,
+        data_collator=data_collator,
             )
             
             logger.info("🎯 RewardTrainer initialized successfully")
@@ -292,7 +292,7 @@ class RewardModelTrainer:
             
             # Train the model
             train_result = self.trainer.train()
-            
+    
             # Save training results
             self.trainer.save_model()
             self.trainer.save_state()
@@ -392,7 +392,7 @@ def main():
         config_path = "config/training_config.json"
         if os.path.exists(config_path):
             config = load_config_from_file(config_path)
-        else:
+    else:
             config = create_default_config()
             logger.info("📋 Using default configuration")
         

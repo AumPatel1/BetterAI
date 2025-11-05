@@ -200,6 +200,15 @@ class HyperparameterOptimizer:
         Returns:
             Dictionary containing optimization results
         """
+    # Add validation
+        if not Path(train_data_path).exists():
+            raise FileNotFoundError(f"Training data not found: {train_data_path}")
+        if not Path(val_data_path).exists():   
+            raise FileNotFoundError(f"Validation data not found: {val_data_path}")
+        if n_trials < 1:
+            raise ValueError(f"n_trials must be >= 1, got {n_trials}")
+    
+
         logger.info(f"🚀 Starting hyperparameter optimization with {n_trials} trials")
         
         # Create study
